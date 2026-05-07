@@ -31,21 +31,31 @@ jobs:
 
       - name: Start Tunnel (Pinggy.io)
         run: |
-          # Use pinggy.io for TCP tunneling over SSH (no install needed)
-          # We'll run it in the background and pipe output to a file to find the URL
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:5900 qr@a.pinggy.io > tunnel.log 2>&1 &
+          # Use pinggy.io for TCP tunneling over SSH
+          # The 'qr@a.pinggy.io' user provides a QR code and link, 't@a.pinggy.io' is for TCP
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:5900 t@a.pinggy.io > tunnel.log 2>&1 &
           
-          # Wait for the tunnel to establish and print the address
           echo "Waiting for tunnel to start..."
-          for i in {1..10}; do
-            sleep 2
-            if grep -q "tcp://" tunnel.log; then
-              grep "tcp://" tunnel.log | sed 's/.*\(tcp:\/\/.*\)/\1/' | awk '{print "VNC Address: " $1}'
+          for i in {1..15}; do
+            sleep 3
+            if grep -q "a.pinggy.link" tunnel.log; then
+              echo "----------------------------------------------------------"
+              echo "TUNNEL ESTABLISHED"
+              # Extract the link and port. Pinggy TCP links look like ran-dom.a.pinggy.link:PORT
+              ADDRESS=$(grep -oE "[a-z0-9-]+\.a\.pinggy\.link:[0-9]+" tunnel.log | head -n 1)
+              if [ -z "$ADDRESS" ]; then
+                # Fallback: look for the "Allocated port" line if the full URL isn't clear
+                PORT=$(grep "Allocated port" tunnel.log | awk '{print $3}')
+                HOST=$(grep -oE "[a-z0-9-]+\.a\.pinggy\.link" tunnel.log | head -n 1)
+                ADDRESS="$HOST:$PORT"
+              fi
+              echo "VNC Address: vnc://$ADDRESS"
+              echo "----------------------------------------------------------"
               break
             fi
-            if [ $i -eq 10 ]; then
-              echo "Tunnel log output (first 20 lines):"
-              head -n 20 tunnel.log
+            if [ $i -eq 15 ]; then
+              echo "Could not detect tunnel address. Full log:"
+              cat tunnel.log
             fi
           done
 
