@@ -1,69 +1,34 @@
-name: Interactive macOS 26 Session
-on: [workflow_dispatch]
+name: macOS VNC
+on: workflow_dispatch
 
 jobs:
-  interactive:
-    runs-on: macos-26
-    timeout-minutes: 60
+  build:
+    runs-on: macos-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Enable Screen Sharing (VNC)
+      - name: Enable macOS VNC Screen Sharing
         run: |
-          # Enable Screen Sharing / Remote Management
-          sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
-          sudo defaults write /Library/Preferences/com.apple.RemoteManagement ARD_AllLocalUsers -bool true
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -clientopts -setvnclegacy -vnclegacy yes -clientopts -setvncpw -vncpw 123456 -restart -agent -privs -all
           
-          # TCC Bypass: Grant screen capture permission to ARDAgent
-          TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
-          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.ARDAgent', 0, 1, 4, 1);"
-          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.RemoteManagementErrors', 0, 1, 4, 1);"
-
-          # Kickstart Remote Management
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on \
-            -configure -allowAccessFor -allUsers \
-            -configure -restart -agent -privs -all
-          
-          # Set VNC-specific password (Legacy mode)
-          echo "Mypassword123!" | sudo tee /etc/vncpasswd
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvnclegacy -vnclegacy yes \
-            -configure -clientopts -setvncpw -vncpw Mypassword123!
-
-      - name: Start Tunnel (Bore)
+      - name: Install Ngrok
+        run: brew install ngrok/ngrok/ngrok
+        
+      - name: Start Ngrok and Keep Alive
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
-          # Detect architecture and download Bore
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
-            URL="https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-aarch64-apple-darwin.tar.gz"
-          else
-            URL="https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-apple-darwin.tar.gz"
-          fi
-          curl -L "$URL" | tar -xz
+          # Start Ngrok in the background
+          ngrok tcp 5900 --authtoken $NGROK_TOKEN --log=stdout > ngrok.log &
           
-          # Start Bore tunnel
-          ./bore local 5900 --to bore.pub > tunnel.log 2>&1 &
+          # Wait a few seconds for Ngrok to initialize
+          sleep 5
           
-          echo "Waiting for tunnel to start..."
-          for i in {1..20}; do
-            sleep 3
-            if grep -q "listening at" tunnel.log; then
-              echo "----------------------------------------------------------"
-              echo "TUNNEL ESTABLISHED"
-              ADDRESS=$(grep -oE "bore.pub:[0-9]+" tunnel.log | head -n 1)
-              echo "VNC Address: vnc://$ADDRESS"
-              echo "----------------------------------------------------------"
-              break
-            fi
-            if [ $i -eq 20 ]; then
-              echo "Could not detect tunnel address. Full log:"
-              cat tunnel.log
-            fi
-          done
-
-      - name: Keep session alive
-        run: |
-          # Keep the job alive for up to 60 minutes
-          sleep 3600
+          # Print the connection address
+          echo "=========================================="
+          echo "Connect to VNC using this address:"
+          curl -s http://localhost:4040/api/tunnels | grep -Eo "tcp://[a-zA-Z0-9.-]+:[0-9]+"
+          echo "VNC Password is: 123456"
+          echo "Username: runner"
+          echo "=========================================="
+          
+          # Keep the runner alive for 6 hours (maximum limit)
+          sleep 21600
