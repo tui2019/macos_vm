@@ -7,11 +7,21 @@ jobs:
     steps:
       - name: Enable macOS VNC Screen Sharing
         run: |
-          # Create a brand new admin user for our VNC connection
+          # 1. Create a brand new admin user for our VNC connection
           sudo sysadminctl -addUser vncuser -fullName "VNC User" -password "123456" -admin
           
-          # Start the VNC server
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -clientopts -setvnclegacy -vnclegacy yes -clientopts -setvncpw -vncpw 123456 -restart -agent -privs -all
+          # 2. Explicitly whitelist 'vncuser' for remote access
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -allowAccessFor -specifiedUsers
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -configure -users vncuser -access -on -privs -all
+          
+          # 3. Bypass macOS TCC (Screen Recording & Accessibility) blocks
+          # Because SIP is disabled on GitHub runners, we can inject permissions directly
+          sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.screensharing.agent', 0, 2, 4, 1);"
+          sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceAccessibility', 'com.apple.screensharing.agent', 0, 2, 4, 1);"
+          sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServicePostEvent', 'com.apple.screensharing.agent', 0, 2, 4, 1);"
+          
+          # 4. Start the VNC server with legacy password fallback
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -clientopts -setvnclegacy -vnclegacy yes -clientopts -setvncpw -vncpw 123456 -restart -agent
           
       - name: Install Ngrok
         run: brew install ngrok/ngrok/ngrok
