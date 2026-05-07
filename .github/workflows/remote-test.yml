@@ -7,6 +7,10 @@ jobs:
     steps:
       - name: Enable macOS VNC Screen Sharing
         run: |
+          # Set a system password for the default 'runner' user
+          sudo dscl . -passwd /Users/runner 123456
+          
+          # Start the VNC server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -clientopts -setvnclegacy -vnclegacy yes -clientopts -setvncpw -vncpw 123456 -restart -agent -privs -all
           
       - name: Install Ngrok
@@ -24,10 +28,10 @@ jobs:
           
           # Print the connection address
           echo "=========================================="
-          echo "Connect to VNC using this address:"
+          echo "Connect to VNC using this address (CHANGE tcp:// TO vnc://):"
           curl -s http://localhost:4040/api/tunnels | grep -Eo "tcp://[a-zA-Z0-9.-]+:[0-9]+"
-          echo "VNC Password is: 123456"
           echo "Username: runner"
+          echo "Password: 123456"
           echo "=========================================="
           
           # Keep the runner alive for 6 hours (maximum limit)
