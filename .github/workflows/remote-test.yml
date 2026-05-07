@@ -11,17 +11,22 @@ jobs:
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          # Set a password for the 'runner' user (using a stronger one to avoid 'unchanged' error)
-          echo "Mypassword123!" | sudo passwd runner
+          # Set a password for the 'runner' user using sysadminctl (more reliable)
+          sudo sysadminctl -resetPasswordFor runner -newPassword "Mypassword123!"
           
           # Enable Screen Sharing / Remote Management
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement ARD_AllLocalUsers -bool true
           
-          # TCC Bypass: Grant screen capture permission to ARDAgent manually
-          # This addresses the "Screen recording might be disabled" warning
-          sudo sqlite3 /Library/Application\ Support/com.apple.TCC/TCC.db "INSERT OR REPLACE INTO access VALUES('kTCCServiceScreenCapture','com.apple.RemoteManagement.ARDAgent',0,1,1,NULL,NULL,NULL,'UNUSED',NULL,0,strftime('%s','now'));"
-          sudo sqlite3 /Library/Application\ Support/com.apple.TCC/TCC.db "INSERT OR REPLACE INTO access VALUES('kTCCServiceScreenCapture','com.apple.RemoteManagement.RemoteManagementErrors',0,1,1,NULL,NULL,NULL,'UNUSED',NULL,0,strftime('%s','now'));"
+          # TCC Bypass: Grant screen capture permission to ARDAgent
+          # Dynamically handle column count by using named columns
+          TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+          SERVICE="kTCCServiceScreenCapture"
+          CLIENT="com.apple.RemoteManagement.ARDAgent"
+          
+          # We use a targeted INSERT to be safe across different macOS versions
+          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, date_added) VALUES ('$SERVICE', '$CLIENT', 0, 1, 4, 1, strftime('%s','now'));"
+          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, date_added) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.RemoteManagementErrors', 0, 1, 4, 1, strftime('%s','now'));"
 
           # Kickstart Remote Management
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
@@ -46,10 +51,10 @@ jobs:
             if grep -q "tunneled with" tunnel.log; then
               echo "----------------------------------------------------------"
               echo "TUNNEL ESTABLISHED"
-              ADDRESS=$(grep -oE "tcp://[a-z0-9.-]+" tunnel.log | head -n 1)
+              # Extract hostname and port
+              ADDRESS=$(grep -oE "[a-z0-9.-]+\.lhr\.(life|run)" tunnel.log | head -n 1)
               PORT=$(grep -oE "port [0-9]+" tunnel.log | awk '{print $2}' | head -n 1)
-              # Localhost.run output: "tunneled with tcp://... port ..."
-              echo "VNC Address: vnc://${ADDRESS#tcp://}:$PORT"
+              echo "VNC Address: vnc://$ADDRESS:$PORT"
               echo "----------------------------------------------------------"
               break
             fi
