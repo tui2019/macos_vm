@@ -15,15 +15,9 @@ jobs:
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement ARD_AllLocalUsers -bool true
           
-          # DEBUG: Print TCC schema to find correct columns
+          # TCC Bypass: Grant screen capture permission to ARDAgent
           TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
-          echo "Checking TCC Schema..."
-          sudo sqlite3 "$TCC_DB" ".schema access"
-          
-          # TCC Bypass Attempt (Generic columns found in most modern macOS)
-          SERVICE="kTCCServiceScreenCapture"
-          CLIENT="com.apple.RemoteManagement.ARDAgent"
-          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 1, 4, 1);"
+          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.ARDAgent', 0, 1, 4, 1);"
           sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.RemoteManagementErrors', 0, 1, 4, 1);"
 
           # Kickstart Remote Management
@@ -33,27 +27,33 @@ jobs:
             -configure -restart -agent -privs -all
           
           # Set VNC-specific password (Legacy mode)
-          # This works independently of the user account's secure token
           echo "Mypassword123!" | sudo tee /etc/vncpasswd
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy -vnclegacy yes \
             -configure -clientopts -setvncpw -vncpw Mypassword123!
 
-      - name: Start Tunnel (Localhost.run)
+      - name: Start Tunnel (Bore)
         run: |
-          # Use localhost.run for TCP tunneling
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 5900:localhost:5900 nokey@localhost.run > tunnel.log 2>&1 &
+          # Detect architecture and download Bore
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            URL="https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-aarch64-apple-darwin.tar.gz"
+          else
+            URL="https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-apple-darwin.tar.gz"
+          fi
+          curl -L "$URL" | tar -xz
+          
+          # Start Bore tunnel
+          ./bore local 5900 --to bore.pub > tunnel.log 2>&1 &
           
           echo "Waiting for tunnel to start..."
           for i in {1..20}; do
             sleep 3
-            if grep -q "tunneled with" tunnel.log; then
+            if grep -q "listening at" tunnel.log; then
               echo "----------------------------------------------------------"
               echo "TUNNEL ESTABLISHED"
-              # Extract hostname and port
-              ADDRESS=$(grep -oE "[a-z0-9.-]+\.lhr\.(life|run)" tunnel.log | head -n 1)
-              PORT=$(grep -oE "port [0-9]+" tunnel.log | awk '{print $2}' | head -n 1)
-              echo "VNC Address: vnc://$ADDRESS:$PORT"
+              ADDRESS=$(grep -oE "bore.pub:[0-9]+" tunnel.log | head -n 1)
+              echo "VNC Address: vnc://$ADDRESS"
               echo "----------------------------------------------------------"
               break
             fi
