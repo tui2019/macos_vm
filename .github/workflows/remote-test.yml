@@ -11,22 +11,20 @@ jobs:
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          # Set a password for the 'runner' user using sysadminctl (more reliable)
-          sudo sysadminctl -resetPasswordFor runner -newPassword "Mypassword123!"
-          
           # Enable Screen Sharing / Remote Management
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement ARD_AllLocalUsers -bool true
           
-          # TCC Bypass: Grant screen capture permission to ARDAgent
-          # Dynamically handle column count by using named columns
+          # DEBUG: Print TCC schema to find correct columns
           TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+          echo "Checking TCC Schema..."
+          sudo sqlite3 "$TCC_DB" ".schema access"
+          
+          # TCC Bypass Attempt (Generic columns found in most modern macOS)
           SERVICE="kTCCServiceScreenCapture"
           CLIENT="com.apple.RemoteManagement.ARDAgent"
-          
-          # We use a targeted INSERT to be safe across different macOS versions
-          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, date_added) VALUES ('$SERVICE', '$CLIENT', 0, 1, 4, 1, strftime('%s','now'));"
-          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, date_added) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.RemoteManagementErrors', 0, 1, 4, 1, strftime('%s','now'));"
+          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 1, 4, 1);"
+          sudo sqlite3 "$TCC_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('kTCCServiceScreenCapture', 'com.apple.RemoteManagement.RemoteManagementErrors', 0, 1, 4, 1);"
 
           # Kickstart Remote Management
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
@@ -34,7 +32,8 @@ jobs:
             -configure -allowAccessFor -allUsers \
             -configure -restart -agent -privs -all
           
-          # Set VNC password
+          # Set VNC-specific password (Legacy mode)
+          # This works independently of the user account's secure token
           echo "Mypassword123!" | sudo tee /etc/vncpasswd
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy -vnclegacy yes \
