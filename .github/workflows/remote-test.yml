@@ -7,8 +7,8 @@ jobs:
     steps:
       - name: Enable macOS VNC Screen Sharing
         run: |
-          # Set a system password for the default 'runner' user
-          sudo dscl . -passwd /Users/runner 123456
+          # Create a brand new admin user for our VNC connection
+          sudo sysadminctl -addUser vncuser -fullName "VNC User" -password "123456" -admin
           
           # Start the VNC server
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -activate -configure -access -on -clientopts -setvnclegacy -vnclegacy yes -clientopts -setvncpw -vncpw 123456 -restart -agent -privs -all
@@ -30,7 +30,7 @@ jobs:
           echo "=========================================="
           echo "Connect to VNC using this address (CHANGE tcp:// TO vnc://):"
           curl -s http://localhost:4040/api/tunnels | grep -Eo "tcp://[a-zA-Z0-9.-]+:[0-9]+"
-          echo "Username: runner"
+          echo "Username: vncuser"
           echo "Password: 123456"
           echo "=========================================="
           
