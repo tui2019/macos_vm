@@ -11,17 +11,19 @@ jobs:
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          # Set a password for the 'runner' user
-          sudo dscl . -passwd /Users/runner mypassword
+          # Set a password for the 'runner' user without needing the old one
+          echo "mypassword" | sudo passwd runner
           
           # Enable Screen Sharing / Remote Management
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
+          
+          # Kickstart Remote Management
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on \
             -configure -allowAccessFor -allUsers \
             -configure -restart -agent -privs -all
           
-          # Set VNC password
+          # Set a VNC-specific password (the legacy way, often more reliable in CI)
           echo "mypassword" | sudo tee /etc/vncpasswd
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy -vnclegacy yes \
