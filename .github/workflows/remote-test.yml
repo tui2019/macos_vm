@@ -11,36 +11,42 @@ jobs:
 
       - name: Enable Screen Sharing (VNC)
         run: |
-          # Set a VNC password
-          # Note: Using 'mypassword' as a placeholder. In a real scenario, consider using a secret.
+          # Set a password for the 'runner' user
+          sudo dscl . -passwd /Users/runner mypassword
+          
+          # Enable Screen Sharing / Remote Management
           sudo defaults write /Library/Preferences/com.apple.RemoteManagement VNCLegacyConnectionsAllowed -bool true
-          echo "mypassword" | sudo tee /etc/vncpasswd
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on \
             -configure -allowAccessFor -allUsers \
             -configure -restart -agent -privs -all
+          
+          # Set VNC password
+          echo "mypassword" | sudo tee /etc/vncpasswd
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy -vnclegacy yes \
             -configure -clientopts -setvncpw -vncpw mypassword
 
-      - name: Install and launch ngrok
-        env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_TOKEN }}
+      - name: Start Tunnel (Pinggy.io)
         run: |
-          brew install ngrok/ngrok/ngrok
-          ngrok config add-authtoken $NGROK_AUTHTOKEN
-          ngrok tcp 5900 --log=stdout &
-          sleep 10
-          # Print the public address
-          curl -s http://localhost:4040/api/tunnels | python3 -c \
-            "import sys,json; t=json.load(sys.stdin)['tunnels'][0]; print('VNC Address:', t['public_url'])"
-
-      - name: Copy and launch your app
-        run: |
-          # If your app is in the repo and built:
-          # open MyApp.app
-          echo "App launch step placeholder. Upload or build your app here."
+          # Use pinggy.io for TCP tunneling over SSH (no install needed)
+          # We'll run it in the background and pipe output to a file to find the URL
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:5900 qr@a.pinggy.io > tunnel.log 2>&1 &
           
+          # Wait for the tunnel to establish and print the address
+          echo "Waiting for tunnel to start..."
+          for i in {1..10}; do
+            sleep 2
+            if grep -q "tcp://" tunnel.log; then
+              grep "tcp://" tunnel.log | sed 's/.*\(tcp:\/\/.*\)/\1/' | awk '{print "VNC Address: " $1}'
+              break
+            fi
+            if [ $i -eq 10 ]; then
+              echo "Tunnel log output (first 20 lines):"
+              head -n 20 tunnel.log
+            fi
+          done
+
       - name: Keep session alive
         run: |
           # Keep the job alive for up to 60 minutes
