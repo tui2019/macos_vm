@@ -3,7 +3,7 @@ on: workflow_dispatch
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - name: Enable macOS VNC Screen Sharing
         run: |
