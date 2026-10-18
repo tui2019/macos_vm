@@ -1,0 +1,203 @@
+name: Extract macOS 27 icons
+on: workflow_dispatch
+
+jobs:
+  extract:
+    runs-on: xcode-27
+    timeout-minutes: 30          # if anything hangs, the job fails visibly instead of running for hours
+    env:
+      SIZES: "16,24,32,48,64,128,256,512,1024"
+
+    steps:
+      - name: "STEP 1/6 - System info"
+        timeout-minutes: 2
+        run: |
+          echo "▶ STEP 1/6 started at $(date +%T)"
+          sw_vers
+          uname -m
+          echo "Free disk space:"; df -h / | tail -1
+          echo "Swift: $(swiftc --version 2>&1 | head -1)"
+          echo "✔ STEP 1/6 done"
+
+      - name: "STEP 2/6 - Find all apps"
+        timeout-minutes: 2
+        run: |
+          echo "▶ STEP 2/6 started at $(date +%T)"
+          : > apps.txt
+          for d in /System/Applications /System/Applications/Utilities \
+                   /System/Library/CoreServices /System/Library/CoreServices/Applications \
+                   /System/Cryptexes/App/System/Applications \
+                   /Applications /Applications/Utilities; do
+            if [ -d "$d" ]; then
+              n=$(ls -d "$d"/*.app 2>/dev/null | tee -a apps.txt | wc -l | tr -d ' ')
+              echo "  $d: $n apps"
+            fi
+          done
+          echo "✔ STEP 2/6 done: $(wc -l < apps.txt | tr -d ' ') apps found in total"
+
+      - name: "STEP 3/6 - Write and compile the icon tool"
+        id: compile
+        continue-on-error: true      # if this fails, step 4 falls back to qlmanage
+        timeout-minutes: 8
+        run: |
+          echo "▶ STEP 3/6 started at $(date +%T)"
+          mkdir -p tool && cd tool
+          cat > main.swift <<'EOF'
+          import AppKit
+
+          setvbuf(stdout, nil, _IONBF, 0)
+
+          let args = CommandLine.arguments
+          if args.count != 4 {
+              print("usage: icondump <outDir> <sizes comma separated> <apps list file>")
+              exit(2)
+          }
+          let outDir = args[1]
+          let sizes = args[2].split(separator: ",").compactMap { Int($0) }
+          guard let listText = try? String(contentsOfFile: args[3], encoding: .utf8) else {
+              print("cannot read \(args[3])")
+              exit(2)
+          }
+          let paths = listText.split(separator: "\n").map { String($0) }.filter { !$0.isEmpty }
+          let fm = FileManager.default
+
+          func renderPNG(icon: NSImage, px: Int) -> Data? {
+              guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+              guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8,
+                                        bytesPerRow: 0, space: space,
+                                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+              NSGraphicsContext.saveGraphicsState()
+              NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+              icon.draw(in: NSRect(x: 0, y: 0, width: px, height: px),
+                        from: .zero, operation: .sourceOver, fraction: 1.0)
+              NSGraphicsContext.restoreGraphicsState()
+              guard let cg = ctx.makeImage() else { return nil }
+              return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+          }
+
+          for s in sizes {
+              try? fm.createDirectory(atPath: "\(outDir)/\(s)", withIntermediateDirectories: true)
+          }
+          var seen = Set<String>()
+          var manifest = "name\tpath\tbundle_id\n"
+          var done = 0
+          var failed = 0
+          for (i, path) in paths.enumerated() {
+              let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+              if seen.contains(name) { continue }
+              seen.insert(name)
+              let icon = NSWorkspace.shared.icon(forFile: path)
+              var ok = true
+              for s in sizes {
+                  if let data = renderPNG(icon: icon, px: s) {
+                      do { try data.write(to: URL(fileURLWithPath: "\(outDir)/\(s)/\(name).png")) }
+                      catch { ok = false }
+                  } else {
+                      ok = false
+                  }
+              }
+              let bid = Bundle(path: path)?.bundleIdentifier ?? ""
+              manifest += "\(name)\t\(path)\t\(bid)\n"
+              if ok { done += 1 } else { failed += 1 }
+              print("[\(i + 1)/\(paths.count)] \(ok ? "ok  " : "FAIL") \(name)")
+          }
+          try? manifest.write(toFile: "\(outDir)/manifest.tsv", atomically: true, encoding: .utf8)
+          print("finished: \(done) ok, \(failed) failed")
+          EOF
+          echo "  source written, compiling..."
+          swiftc -O -swift-version 5 main.swift -o icondump
+          echo "✔ STEP 3/6 done: tool compiled"
+
+      - name: "STEP 4/6 - Extract icons (progress shown per app)"
+        timeout-minutes: 15
+        run: |
+          echo "▶ STEP 4/6 started at $(date +%T)"
+          mkdir -p out
+          if [ -x tool/icondump ]; then
+            echo "  using the Swift tool (renders real macOS 27 icons at each pixel size)"
+            tool/icondump out "$SIZES" apps.txt
+          else
+            echo "  Swift tool unavailable -> fallback: qlmanage thumbnails"
+            total=$(wc -l < apps.txt | tr -d ' ')
+            n=0
+            while IFS= read -r app; do
+              n=$((n+1))
+              name=$(basename "$app" .app)
+              for s in $(echo "$SIZES" | tr ',' ' '); do
+                mkdir -p "out/$s"
+                ( qlmanage -t -s "$s" -o "out/$s" "$app" >/dev/null 2>&1 &
+                  pid=$!
+                  ( sleep 15; kill $pid 2>/dev/null ) &
+                  killer=$!
+                  wait $pid 2>/dev/null
+                  kill $killer 2>/dev/null ) || true
+                [ -f "out/$s/$name.app.png" ] && mv "out/$s/$name.app.png" "out/$s/$name.png"
+              done
+              echo "[$n/$total] $name"
+            done < apps.txt
+          fi
+          echo "✔ STEP 4/6 done"
+
+      - name: "STEP 5/6 - Check results"
+        timeout-minutes: 3
+        run: |
+          echo "▶ STEP 5/6 started at $(date +%T)"
+          {
+            echo "### Icon extraction result"
+            echo ""
+            echo "| size (px) | files | folder size |"
+            echo "|---|---|---|"
+          } > summary.md
+          for s in $(echo "$SIZES" | tr ',' ' '); do
+            if [ -d "out/$s" ]; then
+              c=$(ls out/$s | wc -l | tr -d ' ')
+              z=$(du -sh "out/$s" | cut -f1)
+            else
+              c=0; z="-"
+            fi
+            echo "  $s px: $c files, $z"
+            echo "| $s | $c | $z |" >> summary.md
+          done
+          if [ -f out/256/Notes.png ]; then
+            echo "Sample check (Notes @256):"
+            sips -g pixelWidth -g pixelHeight out/256/Notes.png | tail -2
+          fi
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "✔ STEP 5/6 done"
+
+      - name: "STEP 6a/6 - Upload SMALL icons (16-64 px, tiny download)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icons-1-small-16-to-64
+          path: |
+            out/16
+            out/24
+            out/32
+            out/48
+            out/64
+            out/manifest.tsv
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: "STEP 6b/6 - Upload MEDIUM icons (128 + 256 px)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icons-2-medium-128-256
+          path: |
+            out/128
+            out/256
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: "STEP 6c/6 - Upload LARGE icons (512 + 1024 px, big download)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icons-3-large-512-1024
+          path: |
+            out/512
+            out/1024
+          if-no-files-found: warn
+          retention-days: 7
