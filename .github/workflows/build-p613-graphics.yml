@@ -1,0 +1,258 @@
+name: Build SM-P613 Mainline Android Graphics Stack (Mesa + HWC2 + libion)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "p613_graphics/**"
+      - ".github/workflows/build-p613-graphics.yml"
+
+concurrency:
+  group: p613-graphics-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MESA_TAG: mesa-25.3.6
+  LIBDRM_TAG: libdrm-2.4.124
+  ANDROID_API: 35
+
+jobs:
+  build:
+    name: Build arm64 + arm32 Mesa (Freedreno/Turnip), hwcomposer.drm, libion
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison build-essential ccache cmake flex git glslang-tools \
+            libelf-dev ninja-build patchelf pkg-config \
+            python3-pip unzip wget zip
+          pip3 install --break-system-packages meson mako packaging pyyaml
+          meson --version
+
+      - name: Locate or Download Android NDK r27c
+        run: |
+          if [ -d "${ANDROID_NDK_LATEST_HOME:-/nonexistent}/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+            NDK_DIR="$ANDROID_NDK_LATEST_HOME"
+          elif [ -d "/usr/local/lib/android/sdk/ndk" ] && [ -n "$(ls -A /usr/local/lib/android/sdk/ndk)" ]; then
+            NDK_DIR="/usr/local/lib/android/sdk/ndk/$(ls -1 /usr/local/lib/android/sdk/ndk | sort -V | tail -n 1)"
+          else
+            wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -O /tmp/ndk.zip
+            unzip -q /tmp/ndk.zip -d /tmp/ndk
+            NDK_DIR="/tmp/ndk/android-ndk-r27c"
+          fi
+          echo "NDK_DIR=$NDK_DIR" | tee -a "$GITHUB_ENV"
+          ls -la "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" | head -n 15
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-p613-gfx-ccache-${{ env.MESA_TAG }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-p613-gfx-ccache-${{ env.MESA_TAG }}-
+            ${{ runner.os }}-p613-gfx-ccache-
+
+      - name: Shallow Clone libdrm and Mesa
+        run: |
+          git clone --depth=1 --branch "${LIBDRM_TAG}" https://gitlab.freedesktop.org/mesa/drm.git src/libdrm
+          git clone --depth=1 --branch "${MESA_TAG}" https://gitlab.freedesktop.org/mesa/mesa.git src/mesa
+
+      - name: Build libion.so (arm64 & arm32)
+        run: |
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p dist/lib64 dist/lib
+
+          "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
+            -O2 -Wall -Wextra -Werror -fPIC -shared \
+            -Wl,-soname,libion.so \
+            p613_graphics/libion_dmaheap.c \
+            -llog -o dist/lib64/libion.so
+
+          "$TOOLCHAIN/armv7a-linux-androideabi${ANDROID_API}-clang" \
+            -O2 -Wall -Wextra -Werror -fPIC -shared \
+            -Wl,-soname,libion.so \
+            p613_graphics/libion_dmaheap.c \
+            -llog -o dist/lib/libion.so
+
+          "$TOOLCHAIN/llvm-strip" --strip-unneeded dist/lib64/libion.so dist/lib/libion.so
+          "$TOOLCHAIN/llvm-readelf" -d dist/lib64/libion.so | grep -E "SONAME|NEEDED"
+
+      - name: Build static libdrm (arm64 & arm32) and hwcomposer.drm.so (arm64)
+        run: |
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p cross prefix/arm64 prefix/arm32 dist/lib64/hw
+
+          cat > cross/android-aarch64.ini << EOF
+          [binaries]
+          ar = '$TOOLCHAIN/llvm-ar'
+          c = ['ccache', '$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang']
+          cpp = ['ccache', '$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang++', '-static-libstdc++']
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = '$TOOLCHAIN/llvm-strip'
+          pkgconfig = ['env', 'PKG_CONFIG_LIBDIR=$PWD/prefix/arm64/lib/pkgconfig', '/usr/bin/pkg-config']
+
+          [built-in options]
+          c_args = ['-Wno-error=unused-command-line-argument']
+          cpp_args = ['-Wno-error=unused-command-line-argument', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8'
+          endian = 'little'
+          EOF
+
+          cat > cross/android-arm32.ini << EOF
+          [binaries]
+          ar = '$TOOLCHAIN/llvm-ar'
+          c = ['ccache', '$TOOLCHAIN/armv7a-linux-androideabi${ANDROID_API}-clang']
+          cpp = ['ccache', '$TOOLCHAIN/armv7a-linux-androideabi${ANDROID_API}-clang++', '-static-libstdc++']
+          c_ld = 'lld'
+          cpp_ld = 'lld'
+          strip = '$TOOLCHAIN/llvm-strip'
+          pkgconfig = ['env', 'PKG_CONFIG_LIBDIR=$PWD/prefix/arm32/lib/pkgconfig', '/usr/bin/pkg-config']
+
+          [built-in options]
+          c_args = ['-Wno-error=unused-command-line-argument']
+          cpp_args = ['-Wno-error=unused-command-line-argument', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'arm'
+          cpu = 'armv7a'
+          endian = 'little'
+          EOF
+
+          for abi in arm64 arm32; do
+            cf="cross/android-aarch64.ini"
+            [ "$abi" = "arm32" ] && cf="cross/android-arm32.ini"
+            mkdir -p "$PWD/prefix/$abi/lib/pkgconfig"
+            cat > "$PWD/prefix/$abi/lib/pkgconfig/zlib.pc" << 'ZEOF'
+          Name: zlib
+          Description: Android NDK zlib
+          Version: 1.3.1
+          Libs: -lz
+          ZEOF
+            meson setup "build/libdrm-$abi" src/libdrm \
+              --cross-file "$cf" \
+              --prefix "$PWD/prefix/$abi" \
+              --libdir lib \
+              -Ddefault_library=static \
+              -Db_staticpic=true \
+              -Dbuildtype=release \
+              -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
+              -Dnouveau=disabled -Dvmwgfx=disabled -Domap=disabled \
+              -Dexynos=disabled -Dtegra=disabled -Detnaviv=disabled \
+              -Dfreedreno=enabled -Dvc4=disabled -Dman-pages=disabled \
+              -Dvalgrind=disabled -Dtests=false -Dcairo-tests=disabled \
+              -Dudev=false -Dinstall-test-programs=false
+            ninja -C "build/libdrm-$abi" install
+          done
+
+          # Compile hwcomposer.drm.so (arm64) statically linking our fresh libdrm.a
+          "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
+            -O2 -Wall -Wextra -Werror -fPIC -shared \
+            -I"$PWD/prefix/arm64/include" \
+            -I"$PWD/prefix/arm64/include/libdrm" \
+            -Wl,-soname,hwcomposer.drm.so \
+            p613_graphics/hwcomposer_drm.c \
+            "$PWD/prefix/arm64/lib/libdrm.a" \
+            -llog -lm -o dist/lib64/hw/hwcomposer.drm.so
+
+          "$TOOLCHAIN/llvm-strip" --strip-unneeded dist/lib64/hw/hwcomposer.drm.so
+          "$TOOLCHAIN/llvm-readelf" -d dist/lib64/hw/hwcomposer.drm.so | grep -E "SONAME|NEEDED"
+
+      - name: Build Mesa3D Freedreno + Turnip (arm64 & arm32)
+        run: |
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache --max-size=2G
+
+          for abi in arm64 arm32; do
+            cf="cross/android-aarch64.ini"
+            libdir="lib64"
+            [ "$abi" = "arm32" ] && { cf="cross/android-arm32.ini"; libdir="lib"; }
+
+            meson setup "build/mesa-$abi" src/mesa \
+              --cross-file "$cf" \
+              --prefix "$PWD/install/mesa-$abi" \
+              --libdir "$libdir" \
+              -Dbuildtype=release \
+              -Dplatforms=android \
+              -Dplatform-sdk-version=${ANDROID_API} \
+              -Dandroid-stub=true \
+              -Dandroid-strict=false \
+              -Dandroid-libbacktrace=disabled \
+              -Dgallium-drivers=freedreno \
+              -Dvulkan-drivers=freedreno \
+              -Dfreedreno-kmds=msm \
+              -Degl=enabled \
+              -Dgles1=enabled \
+              -Dgles2=enabled \
+              -Dglx=disabled \
+              -Dllvm=disabled \
+              -Dzstd=disabled \
+              -Dxmlconfig=disabled \
+              -Dcpp_rtti=false
+
+            ninja -C "build/mesa-$abi" -j$(nproc) install
+
+            mkdir -p "dist/$libdir/egl" "dist/$libdir/hw"
+            echo "=== Mesa $abi installed files ==="
+            find "install/mesa-$abi" -type f -o -type l | sort
+
+            # Copy EGL/GLES libraries with standard Android _mesa suffix
+            for base in libEGL libGLESv1_CM libGLESv2; do
+              src_so=$(find "install/mesa-$abi/$libdir" -maxdepth 2 -name "${base}*.so" | head -n 1)
+              if [ -n "$src_so" ]; then
+                cp -L "$src_so" "dist/$libdir/egl/${base}_mesa.so"
+                patchelf --set-soname "${base}_mesa.so" "dist/$libdir/egl/${base}_mesa.so"
+              fi
+            done
+
+            # Copy any supporting shared libraries (e.g. libgallium-*.so, libglapi.so, dri/*.so)
+            find "install/mesa-$abi/$libdir" -maxdepth 2 -name "*.so*" ! -name "libEGL*" ! -name "libGLES*" ! -name "libvulkan*" | while read f; do
+              [ -f "$f" ] || continue
+              bn=$(basename "$f")
+              cp -L "$f" "dist/$libdir/$bn"
+            done
+
+            # Copy Turnip Vulkan driver as vulkan.freedreno.so
+            vk_so=$(find "install/mesa-$abi/$libdir" -maxdepth 2 -name "*vulkan_freedreno*.so" | head -n 1)
+            if [ -n "$vk_so" ]; then
+              cp -L "$vk_so" "dist/$libdir/hw/vulkan.freedreno.so"
+              patchelf --set-soname "vulkan.freedreno.so" "dist/$libdir/hw/vulkan.freedreno.so"
+            fi
+
+            # Strip all built .so files
+            find "dist/$libdir" -name "*.so*" -type f -exec "$TOOLCHAIN/llvm-strip" --strip-unneeded {} +
+          done
+
+          ccache -s
+
+      - name: Inspect Final Artifacts & SONAME/NEEDED Manifest
+        run: |
+          TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "=== File List ==="
+            find dist -type f | sort | xargs ls -lh
+            echo ""
+            echo "=== ELF SONAME & NEEDED ==="
+            for f in $(find dist -name "*.so*" -type f | sort); do
+              echo "--- $f ---"
+              "$TOOLCHAIN/llvm-readelf" -d "$f" | grep -E "SONAME|NEEDED" || true
+            done
+          } | tee dist/MANIFEST.txt
+
+      - name: Upload Graphics Stack Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p613-mainline-graphics
+          path: dist/
