@@ -100,7 +100,7 @@ jobs:
 
           [built-in options]
           c_args = ['-Wno-error=unused-command-line-argument']
-          cpp_args = ['-Wno-error=unused-command-line-argument', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+          cpp_args = ['-Wno-error=unused-command-line-argument', '-Wno-c++11-narrowing', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
 
           [host_machine]
           system = 'android'
@@ -121,7 +121,7 @@ jobs:
 
           [built-in options]
           c_args = ['-Wno-error=unused-command-line-argument']
-          cpp_args = ['-Wno-error=unused-command-line-argument', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
+          cpp_args = ['-Wno-error=unused-command-line-argument', '-Wno-c++11-narrowing', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables']
 
           [host_machine]
           system = 'android'
@@ -256,3 +256,11 @@ jobs:
         with:
           name: p613-mainline-graphics
           path: dist/
+
+      - name: Upload Build Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p613-graphics-logs
+          path: build/mesa-*/meson-logs/meson-log.txt
+          if-no-files-found: ignore
