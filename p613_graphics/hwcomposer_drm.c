@@ -39,6 +39,7 @@
 #define MAKE_TAG_CONSTANT(A, B, C, D) (((A) << 24) | ((B) << 16) | ((C) << 8) | (D))
 #define HARDWARE_MODULE_TAG MAKE_TAG_CONSTANT('H', 'W', 'M', 'T')
 #define HARDWARE_DEVICE_TAG MAKE_TAG_CONSTANT('H', 'W', 'D', 'T')
+#define HAL_MODULE_INFO_SYM HMI
 #define HWC_HARDWARE_MODULE_ID "hwcomposer"
 #define HWC_HARDWARE_COMPOSER "composer"
 #define HWC_MODULE_API_VERSION_0_1 0x0001
@@ -1110,7 +1111,7 @@ static int32_t hwc2_present_display(hwc2_device_t *dev, hwc2_display_t display,
         return HWC2_ERROR_NO_RESOURCES;
     }
 
-    int64_t out_fence = -1;
+    int32_t out_fence = -1;
     uint32_t flags = 0;
 
     if (ctx->needs_modeset) {
